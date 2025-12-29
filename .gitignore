@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Local environment/config
+.env
+
+# Compiler outputs
+*.o
+*.a
+*.so
+*.dylib
+*.obj
+*.exe
+
+# IDE/editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+*~
+.DS_Store
