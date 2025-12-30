@@ -37,6 +37,12 @@ public:
         unrealized_map_[key] = upl;
     }
 
+    void clear_unrealized()
+    {
+        std::lock_guard<std::mutex> lg(mu_);
+        unrealized_map_.clear();
+    }
+
     Totals totals() const
     {
         std::lock_guard<std::mutex> lg(mu_);

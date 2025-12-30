@@ -50,6 +50,10 @@ public:
                                   const std::string &order_link_id = "");
   std::string cancel_all(const std::string &symbol);
 
+  // Batch order submission - all orders in one request
+  std::string batch_submit_orders(const std::vector<std::vector<std::pair<std::string, std::string>>> &order_requests);
+  std::string batch_cancel_orders(const std::vector<std::vector<std::pair<std::string, std::string>>> &cancel_requests);
+
   bool has_credentials() const { return has_keys_; }
 
 private:

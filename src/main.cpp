@@ -118,6 +118,8 @@ std::unique_ptr<bybit::WebSocketClient> start_private_ws(const std::string &endp
             }
             else if (topic.find("position") != std::string::npos && j.contains("data"))
             {
+                pnl_tracker.clear_unrealized();
+                double upl_sum = 0.0;
                 {
                     std::lock_guard<std::mutex> lg(pos_mu);
                     pos_view.long_size = 0.0;
@@ -129,7 +131,7 @@ std::unique_ptr<bybit::WebSocketClient> start_private_ws(const std::string &endp
                 {
                     const std::string sym = get_str_field(p, "symbol");
                     const std::string side = get_str_field(p, "side");
-                    // Track unrealized PnL per symbol/side.
+                    double size_val = as_double(p.value("size", "0"));
                     double upl_val = 0.0;
                     if (p.contains("unrealisedPnl"))
                         upl_val = as_double(p.at("unrealisedPnl"));
@@ -142,19 +144,21 @@ std::unique_ptr<bybit::WebSocketClient> start_private_ws(const std::string &endp
                         std::lock_guard<std::mutex> lg(pos_mu);
                         if (side == "Buy")
                         {
-                            pos_view.long_size = as_double(p.value("size", "0"));
+                            pos_view.long_size = size_val;
                             pos_view.long_entry = as_double(p.value("avgPrice", "0"));
                         }
                         else if (side == "Sell")
                         {
-                            pos_view.short_size = as_double(p.value("size", "0"));
+                            pos_view.short_size = size_val;
                             pos_view.short_entry = as_double(p.value("avgPrice", "0"));
                         }
+                        upl_sum += upl_val;
                     }
-                    std::cout << CLR_YELLOW << "[POS]" << CLR_RESET << " sym=" << sym << " side=" << side << " size=" << get_str_field(p, "size")
-                              << " entry=" << get_str_field(p, "avgPrice") << " upl=" << color_num(as_double(p.value("unrealisedPnl", "0")))
-                              << " lev=" << get_str_field(p, "leverage") << " posIdx=" << get_str_field(p, "positionIdx")
-                              << " fundingFee=" << funding_fee << " occClosingFee=" << get_num_field(p, "occClosingFee") << "\n";
+                    if (size_val > 0)
+                    {
+                        std::cout << CLR_YELLOW << "[POS]" << CLR_RESET << " " << side << " size=" << size_val
+                                  << " entry=" << get_str_field(p, "avgPrice") << " upl=" << color_num(upl_val) << "\n";
+                    }
                 }
                 auto totals = pnl_tracker.totals();
                 double net = (totals.realized - totals.fees + totals.funding + totals.unrealized);

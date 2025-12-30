@@ -113,3 +113,21 @@ std::string TradingHelper::cancel_all(const std::string &symbol)
     }
     return rest_client_->cancel_all(symbol);
 }
+
+std::string TradingHelper::batch_submit_orders(const std::vector<std::vector<std::pair<std::string, std::string>>> &order_requests)
+{
+    if (!has_keys_)
+    {
+        throw std::runtime_error("batch_submit_orders requires API key/secret");
+    }
+    return rest_client_->batch_submit_orders(order_requests);
+}
+
+std::string TradingHelper::batch_cancel_orders(const std::vector<std::vector<std::pair<std::string, std::string>>> &cancel_requests)
+{
+    if (!has_keys_)
+    {
+        throw std::runtime_error("batch_cancel_orders requires API key/secret");
+    }
+    return rest_client_->batch_cancel_orders(cancel_requests);
+}

@@ -119,6 +119,9 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
             std::cout << "[MM] gross cap hit, skip new quotes gross=" << gross_notional << " cap=" << gross_notional_cap_ << "\n";
         }
 
+        // Collect all orders for batch submission
+        std::vector<std::vector<std::pair<std::string, std::string>>> batch_orders;
+
         // Place laddered quotes per side.
         if (!skip_new_quotes)
         {
@@ -127,11 +130,29 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
                 double level_offset = half_spread_abs * level;
                 double bid_ladder_px = round_down(mid - level_offset, meta_.tick_size);
                 double ask_ladder_px = round_down(mid + level_offset, meta_.tick_size);
-                double lvl_qty = base_qty; // keep min size per level
+                double lvl_qty = base_qty;
                 if (bid_scale > 0.0)
-                    helper.submit_limit_order(symbol_, "Buy", to_string_prec(lvl_qty * bid_scale), to_string_prec(bid_ladder_px), buy_pos_idx_, "Limit", make_link("bid"));
+                {
+                    batch_orders.push_back({{"symbol", symbol_},
+                                            {"side", "Buy"},
+                                            {"orderType", "Limit"},
+                                            {"qty", to_string_prec(lvl_qty * bid_scale)},
+                                            {"price", to_string_prec(bid_ladder_px)},
+                                            {"positionIdx", std::to_string(buy_pos_idx_)},
+                                            {"orderLinkId", make_link("bid")},
+                                            {"timeInForce", "GTC"}});
+                }
                 if (ask_scale > 0.0)
-                    helper.submit_limit_order(symbol_, "Sell", to_string_prec(lvl_qty * ask_scale), to_string_prec(ask_ladder_px), sell_pos_idx_, "Limit", make_link("ask"));
+                {
+                    batch_orders.push_back({{"symbol", symbol_},
+                                            {"side", "Sell"},
+                                            {"orderType", "Limit"},
+                                            {"qty", to_string_prec(lvl_qty * ask_scale)},
+                                            {"price", to_string_prec(ask_ladder_px)},
+                                            {"positionIdx", std::to_string(sell_pos_idx_)},
+                                            {"orderLinkId", make_link("ask")},
+                                            {"timeInForce", "GTC"}});
+                }
             }
         }
 
@@ -139,21 +160,42 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
         if (net_qty > meta_.min_qty && ask_scale > 0.0)
         {
             double tp_px = round_down(mid + (tp_spread_bps_ * 0.0001) * mid, meta_.tick_size);
-            helper.submit_limit_order(symbol_, "Sell", to_string_prec(base_qty), to_string_prec(tp_px), sell_pos_idx_, "Limit", make_link("tp_sell"));
+            batch_orders.push_back({{"symbol", symbol_},
+                                    {"side", "Sell"},
+                                    {"orderType", "Limit"},
+                                    {"qty", to_string_prec(base_qty)},
+                                    {"price", to_string_prec(tp_px)},
+                                    {"positionIdx", std::to_string(sell_pos_idx_)},
+                                    {"orderLinkId", make_link("tp_sell")},
+                                    {"timeInForce", "GTC"}});
         }
         else if (net_qty < -meta_.min_qty && bid_scale > 0.0)
         {
             double tp_px = round_down(mid - (tp_spread_bps_ * 0.0001) * mid, meta_.tick_size);
-            helper.submit_limit_order(symbol_, "Buy", to_string_prec(base_qty), to_string_prec(tp_px), buy_pos_idx_, "Limit", make_link("tp_buy"));
+            batch_orders.push_back({{"symbol", symbol_},
+                                    {"side", "Buy"},
+                                    {"orderType", "Limit"},
+                                    {"qty", to_string_prec(base_qty)},
+                                    {"price", to_string_prec(tp_px)},
+                                    {"positionIdx", std::to_string(buy_pos_idx_)},
+                                    {"orderLinkId", make_link("tp_buy")},
+                                    {"timeInForce", "GTC"}});
         }
 
-        // Optional stop-loss: flatten if price moves past threshold from entry.
+        // Submit all orders in one batch request
+        if (!batch_orders.empty())
+        {
+            helper.batch_submit_orders(batch_orders);
+        }
+
+        // Stop-loss: flatten if price moves past threshold from entry.
         if (stop_loss_bps_ > 0.0)
         {
             double stop_mult = stop_loss_bps_ * 0.0001;
             if (pos.long_size > meta_.min_qty && pos.long_entry > 0.0)
             {
                 double stop_px = pos.long_entry * (1.0 - stop_mult);
+                std::cout << "[SLDBG] long mid=" << mid << " entry=" << pos.long_entry << " stop=" << stop_px << " size=" << pos.long_size << "\n";
                 if (mid <= stop_px)
                 {
                     helper.submit_market_order(symbol_, "Sell", to_string_prec(pos.long_size), sell_pos_idx_, make_link("sl_long"));
@@ -163,6 +205,7 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
             if (pos.short_size > meta_.min_qty && pos.short_entry > 0.0)
             {
                 double stop_px = pos.short_entry * (1.0 + stop_mult);
+                std::cout << "[SLDBG] short mid=" << mid << " entry=" << pos.short_entry << " stop=" << stop_px << " size=" << pos.short_size << "\n";
                 if (mid >= stop_px)
                 {
                     helper.submit_market_order(symbol_, "Buy", to_string_prec(pos.short_size), buy_pos_idx_, make_link("sl_short"));
