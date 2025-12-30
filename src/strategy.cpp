@@ -24,7 +24,7 @@ namespace
     }
 } // namespace
 
-void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot, TradingHelper &helper, bool live_trading)
+void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot, TradingHelper &helper, bool live_trading, const PositionView &pos)
 {
     const nlohmann::json *ob_ptr = &snapshot.orderbook;
     if (snapshot.orderbook.contains("result"))
@@ -66,17 +66,34 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
         const double bid_px = round_down(raw_bid_px, meta_.tick_size);
         const double ask_px = round_down(raw_ask_px, meta_.tick_size);
 
-        // Size from budget, rounded to lot size, respecting min qty.
-        double qty = budget_usd_ / mid;
-        qty = round_down(qty, meta_.lot_size);
-        if (qty < meta_.min_qty)
+        // Base size: min tradable size.
+        double base_qty = round_down(meta_.min_qty, meta_.lot_size);
+        if (base_qty < meta_.min_qty)
+            base_qty = meta_.min_qty;
+
+        // Inventory skew: if net long, reduce/suspend new bids; if net short, reduce/suspend asks.
+        double net_qty = pos.long_size - pos.short_size;
+        double bid_scale = 1.0;
+        double ask_scale = 1.0;
+        if (std::abs(net_qty) > max_net_qty_)
         {
-            qty = meta_.min_qty; // lift to minimum tradable size
+            if (net_qty > 0)
+                bid_scale = 0.0; // too long; stop bidding
+            else
+                ask_scale = 0.0; // too short; stop offering
+        }
+        else
+        {
+            double skew_factor = 1.0 - (std::abs(net_qty) / max_net_qty_);
+            if (net_qty > 0)
+                bid_scale = std::max(0.2, skew_factor);
+            else if (net_qty < 0)
+                ask_scale = std::max(0.2, skew_factor);
         }
 
         std::cout << "[MM] " << snapshot.symbol << " mid=" << mid << " live_spread_bps=" << live_spread_bps
                   << " target_spread_bps=" << target_spread_bps << " bid@" << bid_px << " ask@" << ask_px
-                  << " qty=" << qty << (live_trading ? " [live]" : " [dry-run]") << "\n";
+                  << " base_qty=" << base_qty << " net=" << net_qty << (live_trading ? " [live]" : " [dry-run]") << "\n";
 
         auto make_link = [&](const std::string &side)
         {
@@ -91,13 +108,68 @@ void ExampleMarketMakerStrategy::on_snapshot(const MarketDataSnapshot &snapshot,
             return;
         }
 
-        // Place two quotes per tick; log responses.
-        const auto bid_resp =
-            helper.submit_limit_order(symbol_, "Buy", to_string_prec(qty), to_string_prec(bid_px), buy_pos_idx_, "Limit", make_link("bid"));
-        const auto ask_resp =
-            helper.submit_limit_order(symbol_, "Sell", to_string_prec(qty), to_string_prec(ask_px), sell_pos_idx_, "Limit", make_link("ask"));
-        std::cout << "[MM][order] bid_resp=" << bid_resp << "\n";
-        std::cout << "[MM][order] ask_resp=" << ask_resp << "\n";
+        // Cancel previous working orders before placing fresh quotes to avoid stacking margin.
+        helper.cancel_all(symbol_);
+
+        // Gross notional guard: if both sides consume too much margin, skip making markets but still allow TP/SL.
+        double gross_notional = (pos.long_size + pos.short_size) * mid;
+        bool skip_new_quotes = (gross_notional_cap_ > 0.0 && gross_notional >= gross_notional_cap_);
+        if (skip_new_quotes)
+        {
+            std::cout << "[MM] gross cap hit, skip new quotes gross=" << gross_notional << " cap=" << gross_notional_cap_ << "\n";
+        }
+
+        // Place laddered quotes per side.
+        if (!skip_new_quotes)
+        {
+            for (int level = 1; level <= ladder_levels_; ++level)
+            {
+                double level_offset = half_spread_abs * level;
+                double bid_ladder_px = round_down(mid - level_offset, meta_.tick_size);
+                double ask_ladder_px = round_down(mid + level_offset, meta_.tick_size);
+                double lvl_qty = base_qty; // keep min size per level
+                if (bid_scale > 0.0)
+                    helper.submit_limit_order(symbol_, "Buy", to_string_prec(lvl_qty * bid_scale), to_string_prec(bid_ladder_px), buy_pos_idx_, "Limit", make_link("bid"));
+                if (ask_scale > 0.0)
+                    helper.submit_limit_order(symbol_, "Sell", to_string_prec(lvl_qty * ask_scale), to_string_prec(ask_ladder_px), sell_pos_idx_, "Limit", make_link("ask"));
+            }
+        }
+
+        // Take-profit: if net long, place a small ask at tp_spread_bps above mid; if net short, place a small bid below mid.
+        if (net_qty > meta_.min_qty && ask_scale > 0.0)
+        {
+            double tp_px = round_down(mid + (tp_spread_bps_ * 0.0001) * mid, meta_.tick_size);
+            helper.submit_limit_order(symbol_, "Sell", to_string_prec(base_qty), to_string_prec(tp_px), sell_pos_idx_, "Limit", make_link("tp_sell"));
+        }
+        else if (net_qty < -meta_.min_qty && bid_scale > 0.0)
+        {
+            double tp_px = round_down(mid - (tp_spread_bps_ * 0.0001) * mid, meta_.tick_size);
+            helper.submit_limit_order(symbol_, "Buy", to_string_prec(base_qty), to_string_prec(tp_px), buy_pos_idx_, "Limit", make_link("tp_buy"));
+        }
+
+        // Optional stop-loss: flatten if price moves past threshold from entry.
+        if (stop_loss_bps_ > 0.0)
+        {
+            double stop_mult = stop_loss_bps_ * 0.0001;
+            if (pos.long_size > meta_.min_qty && pos.long_entry > 0.0)
+            {
+                double stop_px = pos.long_entry * (1.0 - stop_mult);
+                if (mid <= stop_px)
+                {
+                    helper.submit_market_order(symbol_, "Sell", to_string_prec(pos.long_size), sell_pos_idx_, make_link("sl_long"));
+                    std::cout << "[SL] flattening long size=" << pos.long_size << " at mid=" << mid << " stop=" << stop_px << "\n";
+                }
+            }
+            if (pos.short_size > meta_.min_qty && pos.short_entry > 0.0)
+            {
+                double stop_px = pos.short_entry * (1.0 + stop_mult);
+                if (mid >= stop_px)
+                {
+                    helper.submit_market_order(symbol_, "Buy", to_string_prec(pos.short_size), buy_pos_idx_, make_link("sl_short"));
+                    std::cout << "[SL] flattening short size=" << pos.short_size << " at mid=" << mid << " stop=" << stop_px << "\n";
+                }
+            }
+        }
     }
     catch (const std::exception &ex)
     {
