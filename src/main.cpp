@@ -16,6 +16,10 @@
 #include "strategy.hpp"
 #include "trading_helper.hpp"
 
+#ifndef DEFAULT_SIDE_MODE
+#define DEFAULT_SIDE_MODE "both"
+#endif
+
 // ANSI color helpers for log readability.
 constexpr const char *CLR_RESET = "\033[0m";
 constexpr const char *CLR_CYAN = "\033[36m";
@@ -114,6 +118,13 @@ std::unique_ptr<bybit::WebSocketClient> start_private_ws(const std::string &endp
             }
             else if (topic.find("position") != std::string::npos && j.contains("data"))
             {
+                {
+                    std::lock_guard<std::mutex> lg(pos_mu);
+                    pos_view.long_size = 0.0;
+                    pos_view.short_size = 0.0;
+                    pos_view.long_entry = 0.0;
+                    pos_view.short_entry = 0.0;
+                }
                 for (const auto &p : j["data"])
                 {
                     const std::string sym = get_str_field(p, "symbol");
@@ -285,6 +296,7 @@ int main(int argc, char **argv)
     const int ladder_levels = std::stoi(get_env("BYBIT_LADDER_LEVELS", "3"));
     const double stop_loss_bps = std::stod(get_env("BYBIT_STOP_LOSS_BPS", "-1"));
     const double gross_notional_cap = std::stod(get_env("BYBIT_GROSS_NOTIONAL_CAP", "-1"));
+    const std::string side_mode = get_env("BYBIT_SIDE_MODE", "both"); // both|long_only
 
     try
     {
@@ -345,7 +357,15 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        ExampleMarketMakerStrategy strategy(symbol, meta, budget_usd, min_spread_bps, spread_factor, 1, 2, max_net_qty, tp_spread_bps, ladder_levels, stop_loss_bps, gross_notional_cap);
+        std::unique_ptr<IStrategy> strategy;
+        if (side_mode == "long_only")
+        {
+            strategy = std::make_unique<LongOnlyMarketMakerStrategy>(symbol, meta, budget_usd, min_spread_bps, spread_factor, 1, 2, max_net_qty, tp_spread_bps, ladder_levels, stop_loss_bps, gross_notional_cap);
+        }
+        else
+        {
+            strategy = std::make_unique<ExampleMarketMakerStrategy>(symbol, meta, budget_usd, min_spread_bps, spread_factor, 1, 2, max_net_qty, tp_spread_bps, ladder_levels, stop_loss_bps, gross_notional_cap);
+        }
 
         int i = 0;
         double last_mid = -1.0;
@@ -389,7 +409,7 @@ int main(int argc, char **argv)
                 std::lock_guard<std::mutex> lg(pos_mu);
                 pos_snapshot = pos_view;
             }
-            strategy.on_snapshot(snap, helper, run_live && helper.has_credentials(), pos_snapshot);
+            strategy->on_snapshot(snap, helper, run_live && helper.has_credentials(), pos_snapshot);
             if (mid > 0)
                 last_mid = mid;
             if (run_live && helper.has_credentials())

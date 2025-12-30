@@ -56,6 +56,7 @@ target_link_libraries(market_data_feed PUBLIC ws_helper nlohmann_json::nlohmann_
 
 add_library(strategy
   src/strategy.cpp
+  src/long_only_strategy.cpp
 )
 target_include_directories(strategy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(strategy PUBLIC trading_helper)
@@ -63,6 +64,9 @@ target_link_libraries(strategy PUBLIC trading_helper)
 # --- Executable ---
 add_executable(market_maker_example src/main.cpp)
 target_link_libraries(market_maker_example PRIVATE strategy trading_helper market_data_feed)
+add_executable(market_maker_long_only src/main.cpp)
+target_compile_definitions(market_maker_long_only PRIVATE DEFAULT_SIDE_MODE="long_only")
+target_link_libraries(market_maker_long_only PRIVATE strategy trading_helper market_data_feed)
 
 # --- Tests ---
 enable_testing()
