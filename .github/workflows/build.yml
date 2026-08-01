@@ -1,24 +1,55 @@
-name: Build
+name: Build and test
 
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  offline-build-and-test:
+    name: Release / ${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC
+            cc: gcc
+            cxx: g++
+          - name: Clang
+            cc: clang
+            cxx: clang++
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential pkg-config libssl-dev libcurl4-openssl-dev
+          sudo apt-get install -y \
+            build-essential clang cmake ninja-build pkg-config \
+            libssl-dev libcurl4-openssl-dev zlib1g-dev
 
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Configure Release build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DBYBIT_MM_NETWORK_TESTS=OFF
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --parallel 2
+
+      - name: Run offline tests
+        run: ctest --test-dir build --build-config Release --output-on-failure
