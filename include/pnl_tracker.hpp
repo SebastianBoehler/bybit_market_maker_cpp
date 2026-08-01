@@ -3,6 +3,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // Strategy-local PnL tracker keyed by orderLinkId.
 // Accumulates realized PnL and fees from private execution stream.
@@ -17,17 +18,24 @@ public:
         double unrealized{0.0};
     };
 
-    void add_execution(const std::string &order_link_id, double realized_pnl, double fee)
+    void add_execution(const std::string &exec_id,
+                       const std::string &order_link_id,
+                       double realized_pnl,
+                       double fee)
     {
         std::lock_guard<std::mutex> lg(mu_);
+        if (!seen_execution_ids_.insert(exec_id).second)
+            return;
         auto &t = per_order_[order_link_id];
         t.realized += realized_pnl;
         t.fees += fee;
     }
 
-    void add_funding(double funding_payment)
+    void add_funding(const std::string &exec_id, double funding_payment)
     {
         std::lock_guard<std::mutex> lg(mu_);
+        if (!seen_execution_ids_.insert(exec_id).second)
+            return;
         funding_total_ += funding_payment;
     }
 
@@ -63,6 +71,7 @@ public:
 private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, Totals> per_order_;
+    std::unordered_set<std::string> seen_execution_ids_;
     double funding_total_{0.0};
     std::unordered_map<std::string, double> unrealized_map_;
 };

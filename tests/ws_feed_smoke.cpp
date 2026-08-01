@@ -24,11 +24,11 @@ TEST_CASE("ws_feed_initial_data", "[smoke][network][ws]")
     feed.start({symbol}, 1);
 
     const bool ok = feed.wait_for_initial(std::chrono::milliseconds{10000});
+    auto tk = feed.latest_ticker(symbol);
+    auto ob = feed.latest_orderbook(symbol);
     feed.stop();
 
     REQUIRE(ok);
-    auto tk = feed.latest_ticker(symbol);
-    auto ob = feed.latest_orderbook(symbol);
     REQUIRE(tk.has_value());
     REQUIRE(ob.has_value());
 }

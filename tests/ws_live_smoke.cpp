@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "ws_helper.hpp"
 
 namespace
@@ -30,16 +32,26 @@ TEST_CASE("websocket_public_ticker_stream", "[smoke][network][ws]")
     std::mutex m;
     std::condition_variable cv;
     std::atomic<bool> got_msg{false};
-    std::string last_msg;
 
     ws.connect([&](const std::string &msg)
                {
-    {
-      std::lock_guard<std::mutex> lk(m);
-      last_msg = msg;
-      got_msg = true;
-    }
-    cv.notify_one(); });
+                   try
+                   {
+                       const auto response = nlohmann::json::parse(msg);
+                       if (response.value("topic", "") != "tickers." + symbol ||
+                           !response.contains("data") ||
+                           response["data"].value("symbol", "") != symbol)
+                           return;
+                       {
+                           std::lock_guard<std::mutex> lock(m);
+                           got_msg = true;
+                       }
+                       cv.notify_one();
+                   }
+                   catch (...)
+                   {
+                   }
+               });
 
     ws.subscribe_tickers({symbol});
 
@@ -51,5 +63,4 @@ TEST_CASE("websocket_public_ticker_stream", "[smoke][network][ws]")
     ws.close();
 
     REQUIRE(got_msg.load());
-    REQUIRE(last_msg.find(symbol) != std::string::npos);
 }

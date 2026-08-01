@@ -5,7 +5,9 @@
 WsHelper::WsHelper(std::string url)
 {
     client_ = std::make_unique<bybit::WebSocketClient>(std::move(url));
-    client_->enable_auto_reconnect(true);
+    // The pinned client has no connection-generation callback. Staying closed on
+    // disconnect prevents stale pre-reconnect books from becoming quote-ready.
+    client_->enable_auto_reconnect(false);
 }
 
 void WsHelper::connect(MessageHandler handler)
